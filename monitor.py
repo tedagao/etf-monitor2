@@ -7,7 +7,7 @@ import akshare as ak
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import time
 import json
@@ -44,29 +44,54 @@ def load_positions():
         return {}
 
 # ==================== 数据获取 ====================
+def _normalize_index_df(df):
+    if df is None or df.empty:
+        return None
+    if "日期" in df.columns and "收盘" in df.columns:
+        df = df.rename(columns={"日期": "date", "收盘": "close"})
+    if "date" not in df.columns or "close" not in df.columns:
+        return None
+    df.index = pd.to_datetime(df["date"])
+    df = df.sort_index()
+    df["close"] = df["close"].astype(float)
+    return df
+
 def get_latest_data(index_code, days=120, retries=3, delay=5):
     for attempt in range(retries):
         try:
             symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
+
+            # 1) 主数据源
             df = ak.stock_zh_index_daily(symbol=symbol)
+            df = _normalize_index_df(df)
 
-            # 兜底：主接口没数据时，走另一条指数历史接口
-            if df is None or df.empty:
-                df = ak.index_zh_a_hist(symbol=index_code, period="daily")
-                if df is None or df.empty:
-                    return None
-                df = df.rename(columns={"日期": "date", "收盘": "close"})
+            # 2) 兜底：指数历史接口（明确起止日期）
+            if df is None:
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=5000)).strftime("%Y%m%d")
+                df = ak.index_zh_a_hist(symbol=index_code, period="daily",
+                                        start_date=start_date, end_date=end_date)
+                df = _normalize_index_df(df)
 
-            df.index = pd.to_datetime(df["date"])
-            df = df.sort_index().iloc[-days:]
-            df["close"] = df["close"].astype(float)
+            # 3) 再兜底：腾讯源
+            if df is None:
+                df = ak.stock_zh_index_daily_tx(symbol=symbol)
+                df = _normalize_index_df(df)
+
+            if df is None:
+                return None
+
+            df = df.iloc[-days:]
             return df
-        except Exception as e:
-            logging.warning(f"获取指数 {index_code} 数据失败 (尝试 {attempt+1}/{retries}): {e}")
-            time.sleep(delay)
-    return None
 
-                
+        except Exception as e:
+            print(f"获取 {index_code} 失败 (尝试 {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                print(f"等待 {delay} 秒后重试...")
+                time.sleep(delay)
+            else:
+                print(f"获取 {index_code} 最终失败，跳过")
+                return None
 
 # ==================== 信号判断 ====================
 def check_signal(code, params, confirm_days=3):
@@ -105,11 +130,13 @@ def send_email(subject, body):
     if not all([SENDER_EMAIL, SENDER_PASSWORD, RECEIVER_EMAIL]):
         print("[邮件未发送] 邮箱配置不完整")
         return
+
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
     try:
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
@@ -133,44 +160,38 @@ def monitor():
     positions = load_positions()
     if not positions:
         log_message("⚠️ 持仓文件为空或不存在，将默认所有持仓为0")
-        # 为每个指数设置默认持仓0
-        for code in OPTIMAL_PARAMS:
-            positions.setdefault(code, 0)
+
+    # 为每个指数设置默认持仓0
+    for code in OPTIMAL_PARAMS:
+        positions.setdefault(code, 0)
 
     report_lines = []
-
     for code, params in OPTIMAL_PARAMS.items():
         log_message(f"检查 {params['name']} ...")
         sig, price, msg = check_signal(code, params, CONFIRM_DAYS)
         current_signal = sig if sig else 'NONE'
-
-        # 处理价格可能为 None 的情况
         price_str = f"{price:.2f}" if price is not None else "N/A"
 
-        # 获取手动持仓（如果文件中有则用，否则默认为0）
         position = positions.get(code, 0)
         position_symbol = "✅ 持有" if position == 1 else "❌ 未持有"
 
-        # 判断是否需要操作
-        action = ""
         if current_signal == 'BUY' and position == 0:
-            action = "👉 **建议买入**"
+            action = " **建议买入**"
         elif current_signal == 'SELL' and position == 1:
-            action = "👉 **建议卖出**"
+            action = " **建议卖出**"
         else:
             action = "✅ 无操作"
 
         report_lines.append(
-            f"【{params['name']}】\n"
-            f"  当前信号：{current_signal}（价格 {price_str}）\n"
-            f"  手动持仓：{position_symbol}\n"
-            f"  操作建议：{action}\n"
+            f"〖{params['name']}〗\n"
+            f" 当前信号：{current_signal}（价格 {price_str}）\n"
+            f" 手动持仓：{position_symbol}\n"
+            f" 操作建议：{action}\n"
         )
 
-    # 生成邮件正文
     today = datetime.now().strftime('%Y-%m-%d %H:%M')
-    subject = f"【ETF信号报告】{today}"
-    body = f"尊敬的投资者，以下是今日信号及操作建议（基于您的手动持仓）：\n\n"
+    subject = f"〖ETF信号报告〗{today}"
+    body = "尊敬的投资者，以下是今日信号及操作建议（基于您的手动持仓）：\n\n"
     body += "\n".join(report_lines)
     body += f"\n\n报告时间：{today}\n"
     body += "\n（持仓文件：positions.json，请根据实际买卖自行更新）"
