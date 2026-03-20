@@ -131,7 +131,7 @@ def monitor():
     positions = load_positions()
     if not positions:
         log_message("⚠️ 持仓文件为空或不存在，将默认所有持仓为0")
-        # 默认所有代码持仓0
+        # 为每个指数设置默认持仓0
         for code in OPTIMAL_PARAMS:
             positions.setdefault(code, 0)
 
@@ -141,6 +141,9 @@ def monitor():
         log_message(f"检查 {params['name']} ...")
         sig, price, msg = check_signal(code, params, CONFIRM_DAYS)
         current_signal = sig if sig else 'NONE'
+
+        # 处理价格可能为 None 的情况
+        price_str = f"{price:.2f}" if price is not None else "N/A"
 
         # 获取手动持仓（如果文件中有则用，否则默认为0）
         position = positions.get(code, 0)
@@ -157,7 +160,7 @@ def monitor():
 
         report_lines.append(
             f"【{params['name']}】\n"
-            f"  当前信号：{current_signal}（价格 {price:.2f}）\n"
+            f"  当前信号：{current_signal}（价格 {price_str}）\n"
             f"  手动持仓：{position_symbol}\n"
             f"  操作建议：{action}\n"
         )
