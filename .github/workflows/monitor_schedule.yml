@@ -2,7 +2,7 @@ name: ETF 信号监控
 
 on:
   schedule:
-    - cron: '*/3 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch: # 允许手动触发，方便测试
 
 jobs:
