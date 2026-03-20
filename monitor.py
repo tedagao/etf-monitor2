@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import os
 import time
+import json
 
 # ==================== 从环境变量读取配置 ====================
 EMAIL_ENABLE = os.getenv('EMAIL_ENABLE', 'False').lower() == 'true'
@@ -19,17 +20,30 @@ SENDER_EMAIL = os.getenv('SENDER_EMAIL', '')
 SENDER_PASSWORD = os.getenv('SENDER_PASSWORD', '')
 RECEIVER_EMAIL = os.getenv('RECEIVER_EMAIL', '')
 
-# ==================== 策略参数（使用指数代码，参数来自回测）====================
+# ==================== 策略参数 ====================
 OPTIMAL_PARAMS = {
     '000016': {'short': 3, 'long': 30, 'name': '上证50(000016)'},
     '000300': {'short': 3, 'long': 13, 'name': '沪深300(000300)'},
     '000905': {'short': 3, 'long': 13, 'name': '中证500(000905)'},
     '399006': {'short': 13, 'long': 20, 'name': '创业板指(399006)'},
 }
-
 CONFIRM_DAYS = 3
+POSITION_FILE = 'positions.json'  # 手动持仓文件
 
-# ==================== 数据获取（指数数据，带重试）====================
+# ==================== 读取手动持仓 ====================
+def load_positions():
+    if os.path.exists(POSITION_FILE):
+        try:
+            with open(POSITION_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"读取持仓文件失败，将使用空持仓: {e}")
+            return {}
+    else:
+        print(f"持仓文件 {POSITION_FILE} 不存在，请创建")
+        return {}
+
+# ==================== 数据获取 ====================
 def get_latest_data(index_code, days=120, retries=3, delay=5):
     for attempt in range(retries):
         try:
@@ -107,28 +121,57 @@ def send_email(subject, body):
 # ==================== 日志 ====================
 def log_message(msg):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    full_msg = f"[{timestamp}] {msg}"
-    print(full_msg)
+    print(f"[{timestamp}] {msg}")
 
 # ==================== 主函数 ====================
 def monitor():
-    log_message("开始监控ETF信号（指数数据替代）...")
-    signals = []
+    log_message("开始生成信号报告（基于手动持仓）...")
+
+    # 加载手动持仓
+    positions = load_positions()
+    if not positions:
+        log_message("⚠️ 持仓文件为空或不存在，将默认所有持仓为0")
+        # 默认所有代码持仓0
+        for code in OPTIMAL_PARAMS:
+            positions.setdefault(code, 0)
+
+    report_lines = []
+
     for code, params in OPTIMAL_PARAMS.items():
         log_message(f"检查 {params['name']} ...")
         sig, price, msg = check_signal(code, params, CONFIRM_DAYS)
-        if sig:
-            signal_text = f"{params['name']} {sig} 信号！价格: {price:.2f}，{msg}"
-            log_message(">>> " + signal_text)
-            signals.append(signal_text)
+        current_signal = sig if sig else 'NONE'
+
+        # 获取手动持仓（如果文件中有则用，否则默认为0）
+        position = positions.get(code, 0)
+        position_symbol = "✅ 持有" if position == 1 else "❌ 未持有"
+
+        # 判断是否需要操作
+        action = ""
+        if current_signal == 'BUY' and position == 0:
+            action = "👉 **建议买入**"
+        elif current_signal == 'SELL' and position == 1:
+            action = "👉 **建议卖出**"
         else:
-            log_message(f"{params['name']} 无信号")
-    if signals:
-        subject = f"【指数信号】{len(signals)}个指数触发信号"
-        body = "\n".join(signals) + f"\n\n时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        send_email(subject, body)
-    else:
-        log_message("今日无信号")
+            action = "✅ 无操作"
+
+        report_lines.append(
+            f"【{params['name']}】\n"
+            f"  当前信号：{current_signal}（价格 {price:.2f}）\n"
+            f"  手动持仓：{position_symbol}\n"
+            f"  操作建议：{action}\n"
+        )
+
+    # 生成邮件正文
+    today = datetime.now().strftime('%Y-%m-%d %H:%M')
+    subject = f"【ETF信号报告】{today}"
+    body = f"尊敬的投资者，以下是今日信号及操作建议（基于您的手动持仓）：\n\n"
+    body += "\n".join(report_lines)
+    body += f"\n\n报告时间：{today}\n"
+    body += "\n（持仓文件：positions.json，请根据实际买卖自行更新）"
+
+    send_email(subject, body)
+    log_message("报告邮件已发送")
 
 if __name__ == '__main__':
     monitor()
