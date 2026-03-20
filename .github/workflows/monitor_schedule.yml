@@ -2,8 +2,10 @@ name: ETF 信号监控
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # 允许手动触发，方便测试
+    - cron: '0 16,22,4,10 * * *'   # 测试用，可改回你的正式时间
+    - cron: '0 1 * * *'
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 
 jobs:
   monitor:
@@ -11,14 +13,27 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: 安装依赖
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+
+      # 新增：恢复缓存
+      - name: 恢复上次信号状态缓存
+        id: cache-last-signals
+        uses: actions/cache@v4
+        with:
+          path: last_signals.json          # 缓存的文件路径
+          key: last-signals-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            last-signals-${{ runner.os }}-
+
       - name: 运行监控脚本
         env:
           EMAIL_ENABLE: ${{ secrets.EMAIL_ENABLE }}
@@ -28,3 +43,11 @@ jobs:
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
         run: python monitor.py
+
+      # 新增：保存缓存（即使脚本失败也尝试保存）
+      - name: 保存本次信号状态缓存
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: last_signals.json
+          key: last-signals-${{ runner.os }}-${{ github.run_id }}
