@@ -12,7 +12,6 @@ import os
 import time
 import json
 
-# ==================== 从环境变量读取配置 ====================
 EMAIL_ENABLE = os.getenv('EMAIL_ENABLE', 'False').lower() == 'true'
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.qq.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
@@ -20,7 +19,6 @@ SENDER_EMAIL = os.getenv('SENDER_EMAIL', '')
 SENDER_PASSWORD = os.getenv('SENDER_PASSWORD', '')
 RECEIVER_EMAIL = os.getenv('RECEIVER_EMAIL', '')
 
-# ==================== 策略参数 ====================
 OPTIMAL_PARAMS = {
     '000016': {'short': 3, 'long': 30, 'name': '上证50(000016)'},
     '000300': {'short': 3, 'long': 13, 'name': '沪深300(000300)'},
@@ -28,9 +26,8 @@ OPTIMAL_PARAMS = {
     '399006': {'short': 13, 'long': 20, 'name': '创业板指(399006)'},
 }
 CONFIRM_DAYS = 3
-POSITION_FILE = 'positions.json'  # 手动持仓文件
+POSITION_FILE = 'positions.json'
 
-# ==================== 读取手动持仓 ====================
 def load_positions():
     if os.path.exists(POSITION_FILE):
         try:
@@ -43,7 +40,6 @@ def load_positions():
         print(f"持仓文件 {POSITION_FILE} 不存在，请创建")
         return {}
 
-# ==================== 数据获取 ====================
 def _normalize_index_df(df):
     if df is None or df.empty:
         return None
@@ -61,7 +57,7 @@ def get_latest_data(index_code, days=120, retries=3, delay=5):
         try:
             symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
 
-            # 1) 主数据源
+            # 1) 主数据源（新浪）
             df = ak.stock_zh_index_daily(symbol=symbol)
             df = _normalize_index_df(df)
 
@@ -93,7 +89,6 @@ def get_latest_data(index_code, days=120, retries=3, delay=5):
                 print(f"获取 {index_code} 最终失败，跳过")
                 return None
 
-# ==================== 信号判断 ====================
 def check_signal(code, params, confirm_days=3):
     df = get_latest_data(code, days=params['long'] + confirm_days + 20)
     if df is None or len(df) < params['long'] + confirm_days:
@@ -122,7 +117,6 @@ def check_signal(code, params, confirm_days=3):
 
     return None, None, "无信号"
 
-# ==================== 邮件发送 ====================
 def send_email(subject, body):
     if not EMAIL_ENABLE:
         print("[邮件未发送] 未启用")
@@ -147,21 +141,17 @@ def send_email(subject, body):
     except Exception as e:
         print(f"邮件发送失败: {e}")
 
-# ==================== 日志 ====================
 def log_message(msg):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{timestamp}] {msg}")
 
-# ==================== 主函数 ====================
 def monitor():
     log_message("开始生成信号报告（基于手动持仓）...")
 
-    # 加载手动持仓
     positions = load_positions()
     if not positions:
         log_message("⚠️ 持仓文件为空或不存在，将默认所有持仓为0")
 
-    # 为每个指数设置默认持仓0
     for code in OPTIMAL_PARAMS:
         positions.setdefault(code, 0)
 
