@@ -47,24 +47,26 @@ def load_positions():
 def get_latest_data(index_code, days=120, retries=3, delay=5):
     for attempt in range(retries):
         try:
-            if index_code.startswith('399'):
-                symbol = f"sz{index_code}"
-            else:
-                symbol = f"sh{index_code}"
+            symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
             df = ak.stock_zh_index_daily(symbol=symbol)
-            df.index = pd.to_datetime(df['date'])
-            df = df.sort_index()
-            df = df.iloc[-days:]
-            df['close'] = df['close'].astype(float)
+
+            # 兜底：主接口没数据时，走另一条指数历史接口
+            if df is None or df.empty:
+                df = ak.index_zh_a_hist(symbol=index_code, period="daily")
+                if df is None or df.empty:
+                    return None
+                df = df.rename(columns={"日期": "date", "收盘": "close"})
+
+            df.index = pd.to_datetime(df["date"])
+            df = df.sort_index().iloc[-days:]
+            df["close"] = df["close"].astype(float)
             return df
         except Exception as e:
-            print(f"获取 {index_code} 失败 (尝试 {attempt+1}/{retries}): {e}")
-            if attempt < retries - 1:
-                print(f"等待 {delay} 秒后重试...")
-                time.sleep(delay)
-            else:
-                print(f"获取 {index_code} 最终失败，跳过")
-                return None
+            logging.warning(f"获取指数 {index_code} 数据失败 (尝试 {attempt+1}/{retries}): {e}")
+            time.sleep(delay)
+    return None
+
+                
 
 # ==================== 信号判断 ====================
 def check_signal(code, params, confirm_days=3):
