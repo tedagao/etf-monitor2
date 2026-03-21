@@ -182,7 +182,7 @@ def monitor():
 
     today = datetime.now().strftime('%Y-%m-%d %H:%M')
     subject = f"〖ETF信号报告〗{today}"
-    body = "尊敬的投资者1，以下是今日信号及操作建议（基于您的手动持仓）：\n\n"
+    body = "高爹，以下是今日信号及操作建议（基于您的手动持仓）：\n\n"
     body += "\n".join(report_lines)
     body += f"\n\n报告时间：{today}\n"
     body += "\n（持仓文件：positions.json，请根据实际买卖自行更新）"
