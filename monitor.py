@@ -54,41 +54,52 @@ def _normalize_index_df(df):
     return df
 
 def get_latest_data(index_code, days=120, retries=3, delay=5):
-    for attempt in range(retries):
-        try:
-            symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
-
-            # 1) 主数据源（新浪）
-            df = ak.stock_zh_index_daily(symbol=symbol)
-            df = _normalize_index_df(df)
-
-            # 2) 兜底：指数历史接口（明确起止日期）
-            if df is None:
-                end_date = datetime.now().strftime("%Y%m%d")
-                start_date = (datetime.now() - timedelta(days=5000)).strftime("%Y%m%d")
-                df = ak.index_zh_a_hist(symbol=index_code, period="daily",
-                                        start_date=start_date, end_date=end_date)
-                df = _normalize_index_df(df)
-
-            # 3) 再兜底：腾讯源
-            if df is None:
-                df = ak.stock_zh_index_daily_tx(symbol=symbol)
-                df = _normalize_index_df(df)
-
-            if df is None:
-                return None
-
-            df = df.iloc[-days:]
-            return df
-
-        except Exception as e:
-            print(f"获取 {index_code} 失败 (尝试 {attempt+1}/{retries}): {e}")
-            if attempt < retries - 1:
-                print(f"等待 {delay} 秒后重试...")
-                time.sleep(delay)
-            else:
-                print(f"获取 {index_code} 最终失败，跳过")
-                return None
+	    for attempt in range(retries):
+	        df = None
+	        try:
+	            symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
+	            # 1) 尝试主数据源（新浪）
+	            try:
+	                df = ak.stock_zh_index_daily(symbol=symbol)
+	                df = _normalize_index_df(df)
+	            except Exception as e:
+	                # print(f"新浪源失败: {e}") # 调试用
+	                df = None
+	            # 2) 尝试兜底：指数历史接口（东方财富）
+	            if df is None:
+	                try:
+	                    end_date = datetime.now().strftime("%Y%m%d")
+	                    start_date = (datetime.now() - timedelta(days=5000)).strftime("%Y%m%d")
+	                    # 注意：东方财富接口通常直接使用指数代码，如 "399006"
+	                    df = ak.index_zh_a_hist(symbol=index_code, period="daily",
+	                                            start_date=start_date, end_date=end_date)
+	                    df = _normalize_index_df(df)
+	                except Exception as e:
+	                    # print(f"东方财富源失败: {e}") # 调试用
+	                    df = None
+	            # 3) 尝试再兜底：腾讯源
+	            if df is None:
+	                try:
+	                    df = ak.stock_zh_index_daily_tx(symbol=symbol)
+	                    df = _normalize_index_df(df)
+	                except Exception as e:
+	                    # print(f"腾讯源失败: {e}") # 调试用
+	                    df = None
+	            # 数据有效性检查
+	            if df is not None and len(df) > 0:
+	                df = df.iloc[-days:]
+	                return df
+	            else:
+	                # 如果三个源都没拿到数据，抛出异常触发外层重试
+	                raise Exception("所有数据源均未获取到有效数据")
+	        except Exception as e:
+	            print(f"获取 {index_code} 失败 (尝试 {attempt+1}/{retries}): {e}")
+	            if attempt < retries - 1:
+	                print(f"等待 {delay} 秒后重试...")
+	                time.sleep(delay)
+	            else:
+	                print(f"获取 {index_code} 最终失败，跳过")
+	                return None
 
 def check_signal(code, params, confirm_days=3):
     df = get_latest_data(code, days=params['long'] + confirm_days + 20)
