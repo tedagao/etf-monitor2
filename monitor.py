@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import os
 import time
 import json
+import requests
 
 EMAIL_ENABLE = os.getenv('EMAIL_ENABLE', 'False').lower() == 'true'
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.qq.com')
@@ -53,53 +54,70 @@ def _normalize_index_df(df):
     df["close"] = df["close"].astype(float)
     return df
 
+
 def get_latest_data(index_code, days=120, retries=3, delay=5):
-	    for attempt in range(retries):
-	        df = None
-	        try:
-	            symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
-	            # 1) 尝试主数据源（新浪）
-	            try:
-	                df = ak.stock_zh_index_daily(symbol=symbol)
-	                df = _normalize_index_df(df)
-	            except Exception as e:
-	                # print(f"新浪源失败: {e}") # 调试用
-	                df = None
-	            # 2) 尝试兜底：指数历史接口（东方财富）
-	            if df is None:
-	                try:
-	                    end_date = datetime.now().strftime("%Y%m%d")
-	                    start_date = (datetime.now() - timedelta(days=5000)).strftime("%Y%m%d")
-	                    # 注意：东方财富接口通常直接使用指数代码，如 "399006"
-	                    df = ak.index_zh_a_hist(symbol=index_code, period="daily",
-	                                            start_date=start_date, end_date=end_date)
-	                    df = _normalize_index_df(df)
-	                except Exception as e:
-	                    # print(f"东方财富源失败: {e}") # 调试用
-	                    df = None
-	            # 3) 尝试再兜底：腾讯源
-	            if df is None:
-	                try:
-	                    df = ak.stock_zh_index_daily_tx(symbol=symbol)
-	                    df = _normalize_index_df(df)
-	                except Exception as e:
-	                    # print(f"腾讯源失败: {e}") # 调试用
-	                    df = None
-	            # 数据有效性检查
-	            if df is not None and len(df) > 0:
-	                df = df.iloc[-days:]
-	                return df
-	            else:
-	                # 如果三个源都没拿到数据，抛出异常触发外层重试
-	                raise Exception("所有数据源均未获取到有效数据")
-	        except Exception as e:
-	            print(f"获取 {index_code} 失败 (尝试 {attempt+1}/{retries}): {e}")
-	            if attempt < retries - 1:
-	                print(f"等待 {delay} 秒后重试...")
-	                time.sleep(delay)
-	            else:
-	                print(f"获取 {index_code} 最终失败，跳过")
-	                return None
+	# 设置一个通用的请求头，模拟浏览器，防止简单的 UA 拦截
+	# 注意：akshare 部分接口支持传入 requests 参数，但为了兼容性，我们在外层做全局设置或尝试
+	session = requests.Session()
+	session.headers.update({
+		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+	})
+	for attempt in range(retries):
+		df = None
+		try:
+			# 策略调整：优先使用东方财富接口（最稳定），其次新浪，最后腾讯
+			# 因为新浪和腾讯对创业板指数的代码格式敏感且容易封锁
+			# 1. 尝试东方财富 (index_zh_a_hist)
+			# 这个接口通常数据最全，且对创业板支持最好
+			try:
+				end_date = datetime.now().strftime("%Y%m%d")
+				start_date = (datetime.now() - timedelta(days=5000)).strftime("%Y%m%d")
+				# 注意：akshare 的此接口可能不支持 session 传入，库内部封装了 requests
+				df = ak.index_zh_a_hist(symbol=index_code, period="daily", 
+										start_date=start_date, end_date=end_date)
+				if df is not None and not df.empty:
+					 # 东方财富返回的列名通常是中文，交给 _normalize_index_df 处理
+					df = _normalize_index_df(df)
+					print(f"[尝试 {attempt+1}] 东方财富接口成功获取 {index_code}")
+			except Exception as e:
+				print(f"[尝试 {attempt+1}] 东方财富接口失败: {e}")
+				df = None
+			# 2. 尝试新浪 (兜底)
+			if df is None:
+				try:
+					symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
+					df = ak.stock_zh_index_daily(symbol=symbol)
+					df = _normalize_index_df(df)
+					if df is not None:
+						print(f"[尝试 {attempt+1}] 新浪接口成功获取 {index_code}")
+				except Exception as e:
+					print(f"[尝试 {attempt+1}] 新浪接口失败: {e}")
+					df = None
+			# 3. 尝试腾讯 (最后兜底)
+			if df is None:
+				try:
+					symbol = f"sz{index_code}" if index_code.startswith('399') else f"sh{index_code}"
+					df = ak.stock_zh_index_daily_tx(symbol=symbol)
+					df = _normalize_index_df(df)
+					if df is not None:
+						print(f"[尝试 {attempt+1}] 腾讯接口成功获取 {index_code}")
+				except Exception as e:
+					print(f"[尝试 {attempt+1}] 腾讯接口失败: {e}")
+					df = None
+			# 最终检查
+			if df is not None and len(df) > 0:
+				return df.iloc[-days:]
+			else:
+				# 如果还是空，等待后重试
+				if attempt < retries - 1:
+					print(f"所有源均失败，等待 {delay} 秒后重试...")
+					time.sleep(delay)
+		except Exception as e:
+			print(f"发生未预期错误: {e}")
+			if attempt < retries - 1:
+				time.sleep(delay)
+	print(f"警告：{index_code} 最终获取失败，请检查网络环境是否被防火墙拦截")
+	return None
 
 def check_signal(code, params, confirm_days=3):
     df = get_latest_data(code, days=params['long'] + confirm_days + 20)
